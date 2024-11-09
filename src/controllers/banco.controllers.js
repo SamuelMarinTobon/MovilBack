@@ -12,6 +12,7 @@ const getBancoall = async (req, res) => {
 };
 
 const loginUser = async (req, res) => {
+  console.log(req.body);
   try {
     const { email, password } = req.body;
     const connection = await getConnection();
@@ -214,8 +215,8 @@ const solicitarPrestamo = async (req, res) => {
     await connection.query(actualizarSaldo);
 
     const registrarPrestamo = `
-  INSERT INTO prestamos (numero_cuenta, monto, plazo, estado, fecha_solicitud) 
-  VALUES ('${numeroCuenta}', ${monto}, ${plazo}, 'aprobado', NOW())`;
+  INSERT INTO prestamos (numero_cuenta, monto, monto_inicial, plazo, cuota_mensual, estado, fecha_solicitud) 
+      VALUES ('${numeroCuenta}', ${monto}, ${monto}, ${plazo}, ${monto / plazo}, 'aprobado', NOW())`;
     await connection.query(registrarPrestamo);
 
     const registrarTransaccion = `
@@ -235,13 +236,18 @@ const pagarPrestamo = async (req, res) => {
     const { numeroCuenta, monto } = req.body;
     const connection = await getConnection();
 
-    const consultaDeuda = `SELECT SUM(monto) AS totalDeuda FROM prestamos 
-    WHERE numero_cuenta = '${numeroCuenta}' AND estado = 'aprobado'`;
+    const consultaDeuda = `SELECT SUM(monto) AS totalDeuda, MIN(cuota_mensual) AS cuota_mensual FROM prestamos 
+      WHERE numero_cuenta = '${numeroCuenta}' AND estado = 'aprobado'`;
     const [resultadoDeuda] = await connection.query(consultaDeuda);
     const totalDeuda = resultadoDeuda[0].totalDeuda || 0;
+    const cuotaMensual = resultadoDeuda[0].cuota_mensual;
 
     if (monto > totalDeuda) {
       return res.json({ success: false, message: 'El monto a pagar no puede ser mayor que la deuda total.' });
+    }
+
+    if (monto < cuotaMensual) {
+      return res.json({ success: false, message: 'El monto a pagar debe ser mayor o igual a la cuota mensual.' });
     }
 
     const consultaSaldo = `SELECT saldo FROM usuarios WHERE numero_cuenta = '${numeroCuenta}'`;
@@ -261,7 +267,9 @@ const pagarPrestamo = async (req, res) => {
     const nuevoMonto = totalDeuda - monto;
 
     if (nuevoMonto <= 0) {
-      await connection.query(`UPDATE prestamos SET estado = 'cancelado' WHERE numero_cuenta = '${numeroCuenta}'`);
+      await connection.query(
+        `UPDATE prestamos SET estado = 'cancelado', monto = 0 WHERE numero_cuenta = '${numeroCuenta}'`
+      );
     } else {
       await connection.query(
         `UPDATE prestamos SET monto = ${nuevoMonto} WHERE numero_cuenta = '${numeroCuenta}' AND estado = 'aprobado'`
@@ -280,13 +288,15 @@ const verPrestamos = async (req, res) => {
     const { numeroCuenta } = req.body;
     const connection = await getConnection();
 
-    const sumaDeudas = `SELECT SUM(monto) AS totalDeuda FROM prestamos 
-  WHERE numero_cuenta = '${numeroCuenta}' AND estado = 'aprobado'`;
+    const sumaDeudas = `SELECT SUM(monto) AS totalDeuda,cuota_mensual FROM prestamos 
+  WHERE numero_cuenta = '${numeroCuenta}' AND estado = 'aprobado'
+  GROUP BY cuota_mensual`;
     const [resultado] = await connection.query(sumaDeudas);
 
     const totalDeuda = resultado[0].totalDeuda || 0;
+    const cuota_mensual = resultado[0].cuota_mensual;
 
-    res.json({ success: true, totalDeuda });
+    res.json({ success: true, totalDeuda, cuota_mensual });
   } catch (err) {
     console.log(err);
     res.json({ success: false, message: 'Error en obtener deuda total' });
